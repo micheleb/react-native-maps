@@ -2,6 +2,43 @@
 
 React Native Map components for iOS + Android
 
+## About this fork
+
+This fork was made to improve performances on Android. At the moment, what's different from the main repo is:
+
+- the project can now be built using Android Studio 3+ (gradle 4.4)
+
+- the example folder was deleted (not to mess with gradle any more than necessary)
+
+- marker bitmaps are cached and reused bypassing Fresco (after the first call, if loaded from URL, or altogether, if
+loaded from a descriptor). Most of the code for this feature comes from [this PR][1].
+
+To use this fork of the library instead of the original, clone the repo next to your react-native repo, and replace the
+2 react-native-maps related lines in your `settings.gradle` like this:
+
+    # old:
+    # include ':react-native-maps'
+    # project(':react-native-maps').projectDir = new File(rootProject.projectDir, '../node_modules/react-native-maps/lib/android')
+    #
+    # replace with:
+    include ':react-native-maps-lib'
+    project(':react-native-maps-lib').projectDir = new File(rootProject.projectDir, '../../../react-native-maps/lib/android')
+
+and then in your `app/build.gradle`:
+
+    # old:
+    # implementation project(':react-native-maps')
+    #
+    # replace with:
+    implementation project(':react-native-maps-lib')
+
+The `-lib` suffix isn't technically needed, but it lets you update the project without having to remove the old, restart
+Android Studio, and load the new.
+
+Following is the original README.
+
+[1]: https://github.com/react-community/react-native-maps/pull/1344
+
 ## Installation
 
 See [Installation Instructions](docs/installation.md).

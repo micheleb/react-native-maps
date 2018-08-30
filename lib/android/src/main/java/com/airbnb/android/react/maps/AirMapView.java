@@ -125,7 +125,7 @@ public class AirMapView extends MapView implements GoogleMap.InfoWindowAdapter,
       } else if (!contextHasBug(reactContext.getApplicationContext())) {
         superContext = reactContext.getApplicationContext();
       } else {
-        // ¯\_(ツ)_/¯
+        // he
       }
     }
     return superContext;

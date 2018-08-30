@@ -4,7 +4,6 @@ import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
-import android.graphics.drawable.Animatable;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.view.View;
@@ -13,20 +12,17 @@ import android.animation.ObjectAnimator;
 import android.util.Property;
 import android.animation.TypeEvaluator;
 
+import com.facebook.common.executors.CallerThreadExecutor;
 import com.facebook.common.references.CloseableReference;
 import com.facebook.datasource.DataSource;
 import com.facebook.drawee.backends.pipeline.Fresco;
-import com.facebook.drawee.controller.BaseControllerListener;
-import com.facebook.drawee.controller.ControllerListener;
 import com.facebook.drawee.drawable.ScalingUtils;
 import com.facebook.drawee.generic.GenericDraweeHierarchy;
 import com.facebook.drawee.generic.GenericDraweeHierarchyBuilder;
-import com.facebook.drawee.interfaces.DraweeController;
 import com.facebook.drawee.view.DraweeHolder;
 import com.facebook.imagepipeline.core.ImagePipeline;
+import com.facebook.imagepipeline.datasource.BaseBitmapDataSubscriber;
 import com.facebook.imagepipeline.image.CloseableImage;
-import com.facebook.imagepipeline.image.CloseableStaticBitmap;
-import com.facebook.imagepipeline.image.ImageInfo;
 import com.facebook.imagepipeline.request.ImageRequest;
 import com.facebook.imagepipeline.request.ImageRequestBuilder;
 import com.facebook.react.bridge.ReadableMap;
@@ -38,8 +34,11 @@ import com.google.android.gms.maps.model.Marker;
 import com.google.android.gms.maps.model.MarkerOptions;
 
 import javax.annotation.Nullable;
+import java.util.HashSet;
 
 public class AirMapMarker extends AirMapFeature {
+
+  private static final HashSet<String> IMG_LOADING_IN_PROGRESS = new HashSet<>();
 
   private MarkerOptions markerOptions;
   private Marker marker;
@@ -76,38 +75,6 @@ public class AirMapMarker extends AirMapFeature {
   private boolean hasCustomMarkerView = false;
 
   private final DraweeHolder<?> logoHolder;
-  private DataSource<CloseableReference<CloseableImage>> dataSource;
-  private final ControllerListener<ImageInfo> mLogoControllerListener =
-      new BaseControllerListener<ImageInfo>() {
-        @Override
-        public void onFinalImageSet(
-            String id,
-            @Nullable final ImageInfo imageInfo,
-            @Nullable Animatable animatable) {
-          CloseableReference<CloseableImage> imageReference = null;
-          try {
-            imageReference = dataSource.getResult();
-            if (imageReference != null) {
-              CloseableImage image = imageReference.get();
-              if (image != null && image instanceof CloseableStaticBitmap) {
-                CloseableStaticBitmap closeableStaticBitmap = (CloseableStaticBitmap) image;
-                Bitmap bitmap = closeableStaticBitmap.getUnderlyingBitmap();
-                if (bitmap != null) {
-                  bitmap = bitmap.copy(Bitmap.Config.ARGB_8888, true);
-                  iconBitmap = bitmap;
-                  iconBitmapDescriptor = BitmapDescriptorFactory.fromBitmap(bitmap);
-                }
-              }
-            }
-          } finally {
-            dataSource.close();
-            if (imageReference != null) {
-              CloseableReference.closeSafely(imageReference);
-            }
-          }
-          update();
-        }
-      };
 
   public AirMapMarker(Context context) {
     super(context);
@@ -263,37 +230,74 @@ public class AirMapMarker extends AirMapFeature {
     animator.start();
   }
 
-  public void setImage(String uri) {
+  public void setImage(final String uri) {
+
     if (uri == null) {
       iconBitmapDescriptor = null;
+      iconBitmap = null;
       update();
-    } else if (uri.startsWith("http://") || uri.startsWith("https://") ||
+      return;
+    }
+
+    try {
+      // wait for the other thread to load the bitmap
+      while (IMG_LOADING_IN_PROGRESS.contains(uri))
+        Thread.sleep(50);
+    } catch (InterruptedException e) {
+      e.printStackTrace();
+    }
+
+    BitmapDescriptorContainer container = LruCacheManager.getInstance().getBitmapFromMemCache(uri);
+    if (container != null) {
+      iconBitmapDescriptor = container.getBitmapDescriptor();
+      iconBitmap = container.getBitmap();
+      update();
+      return;
+    }
+
+    if (uri.startsWith("http://") || uri.startsWith("https://") ||
         uri.startsWith("file://") || uri.startsWith("asset://")) {
+
       ImageRequest imageRequest = ImageRequestBuilder
           .newBuilderWithSource(Uri.parse(uri))
           .build();
 
       ImagePipeline imagePipeline = Fresco.getImagePipeline();
-      dataSource = imagePipeline.fetchDecodedImage(imageRequest, this);
-      DraweeController controller = Fresco.newDraweeControllerBuilder()
-          .setImageRequest(imageRequest)
-          .setControllerListener(mLogoControllerListener)
-          .setOldController(logoHolder.getController())
-          .build();
-      logoHolder.setController(controller);
-    } else {
-      iconBitmapDescriptor = getBitmapDescriptorByName(uri);
-      if (iconBitmapDescriptor != null) {
-          int drawableId = getDrawableResourceByName(uri);
-          iconBitmap = BitmapFactory.decodeResource(getResources(), drawableId);
-          if (iconBitmap == null) { // VectorDrawable or similar
-              Drawable drawable = getResources().getDrawable(drawableId);
-              iconBitmap = Bitmap.createBitmap(drawable.getIntrinsicWidth(), drawable.getIntrinsicHeight(), Bitmap.Config.ARGB_8888);
-              drawable.setBounds(0, 0, drawable.getIntrinsicWidth(), drawable.getIntrinsicHeight());
-              Canvas canvas = new Canvas(iconBitmap);
-              drawable.draw(canvas);
+      final DataSource<CloseableReference<CloseableImage>> dataSource = imagePipeline.fetchDecodedImage(imageRequest, null);
+      IMG_LOADING_IN_PROGRESS.add(uri);
+
+      dataSource.subscribe(new BaseBitmapDataSubscriber() {
+        @Override
+        protected void onNewResultImpl(@Nullable Bitmap bitmap) {
+          if (dataSource.isFinished() && bitmap != null) {
+            iconBitmapDescriptor = LruCacheManager.getInstance().addBitmapToMemoryCache(uri, bitmap);
+            iconBitmap = bitmap;
+            dataSource.close();
+            update();
+            IMG_LOADING_IN_PROGRESS.remove(uri);
           }
+        }
+
+        @Override
+        protected void onFailureImpl(DataSource<CloseableReference<CloseableImage>> dataSource) {
+          if (dataSource != null) {
+            dataSource.close();
+          }
+          IMG_LOADING_IN_PROGRESS.remove(uri);
+        }
+      }, CallerThreadExecutor.getInstance());
+
+    } else {
+      int drawableId = getDrawableResourceByName(uri);
+      iconBitmap = BitmapFactory.decodeResource(getResources(), drawableId);
+      if (iconBitmap == null) { // VectorDrawable or similar
+          Drawable drawable = getResources().getDrawable(drawableId);
+          iconBitmap = Bitmap.createBitmap(drawable.getIntrinsicWidth(), drawable.getIntrinsicHeight(), Bitmap.Config.ARGB_8888);
+          drawable.setBounds(0, 0, drawable.getIntrinsicWidth(), drawable.getIntrinsicHeight());
+          Canvas canvas = new Canvas(iconBitmap);
+          drawable.draw(canvas);
       }
+      iconBitmapDescriptor = LruCacheManager.getInstance().addBitmapToMemoryCache(uri, iconBitmap);
       update();
     }
   }
