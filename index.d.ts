@@ -30,6 +30,7 @@ declare module "react-native-maps" {
     export interface MapEvent<T = {}> extends NativeSyntheticEvent<T & {
         coordinate: LatLng;
         position: Point;
+        action?: string;
     }> {}
 
     export type LineCapType = 'butt' | 'round' | 'square';
