@@ -4,6 +4,8 @@ import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.drawable.Animatable;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.view.View;
@@ -72,6 +74,10 @@ public class AirMapMarker extends AirMapFeature {
   private float calloutAnchorY;
   private boolean calloutAnchorIsSet;
 
+  private boolean tracksViewChanges = true;
+  private boolean tracksViewChangesActive = false;
+  private boolean hasViewChanges = true;
+
   private boolean hasCustomMarkerView = false;
 
   private final DraweeHolder<?> logoHolder;
@@ -103,10 +109,8 @@ public class AirMapMarker extends AirMapFeature {
   }
 
   private GenericDraweeHierarchy createDraweeHierarchy() {
-    return new GenericDraweeHierarchyBuilder(getResources())
-        .setActualImageScaleType(ScalingUtils.ScaleType.FIT_CENTER)
-        .setFadeDuration(0)
-        .build();
+    return new GenericDraweeHierarchyBuilder(getResources()).setActualImageScaleType(ScalingUtils.ScaleType.FIT_CENTER)
+        .setFadeDuration(0).build();
   }
 
   public void setCoordinate(ReadableMap coordinate) {
@@ -114,12 +118,12 @@ public class AirMapMarker extends AirMapFeature {
     if (marker != null) {
       marker.setPosition(position);
     }
-    update();
+    update(false);
   }
 
   public void setIdentifier(String identifier) {
     this.identifier = identifier;
-    update();
+    update(false);
   }
 
   public String getIdentifier() {
@@ -131,7 +135,7 @@ public class AirMapMarker extends AirMapFeature {
     if (marker != null) {
       marker.setTitle(title);
     }
-    update();
+    update(false);
   }
 
   public void setSnippet(String snippet) {
@@ -139,7 +143,7 @@ public class AirMapMarker extends AirMapFeature {
     if (marker != null) {
       marker.setSnippet(snippet);
     }
-    update();
+    update(false);
   }
 
   public void setRotation(float rotation) {
@@ -147,7 +151,7 @@ public class AirMapMarker extends AirMapFeature {
     if (marker != null) {
       marker.setRotation(rotation);
     }
-    update();
+    update(false);
   }
 
   public void setFlat(boolean flat) {
@@ -155,7 +159,7 @@ public class AirMapMarker extends AirMapFeature {
     if (marker != null) {
       marker.setFlat(flat);
     }
-    update();
+    update(false);
   }
 
   public void setDraggable(boolean draggable) {
@@ -163,7 +167,7 @@ public class AirMapMarker extends AirMapFeature {
     if (marker != null) {
       marker.setDraggable(draggable);
     }
-    update();
+    update(false);
   }
 
   public void setZIndex(int zIndex) {
@@ -171,7 +175,7 @@ public class AirMapMarker extends AirMapFeature {
     if (marker != null) {
       marker.setZIndex(zIndex);
     }
-    update();
+    update(false);
   }
 
   public void setOpacity(float opacity) {
@@ -179,12 +183,12 @@ public class AirMapMarker extends AirMapFeature {
     if (marker != null) {
       marker.setAlpha(opacity);
     }
-    update();
+    update(false);
   }
 
   public void setMarkerHue(float markerHue) {
     this.markerHue = markerHue;
-    update();
+    update(false);
   }
 
   public void setAnchor(double x, double y) {
@@ -194,7 +198,7 @@ public class AirMapMarker extends AirMapFeature {
     if (marker != null) {
       marker.setAnchor(anchorX, anchorY);
     }
-    update();
+    update(false);
   }
 
   public void setCalloutAnchor(double x, double y) {
@@ -204,7 +208,54 @@ public class AirMapMarker extends AirMapFeature {
     if (marker != null) {
       marker.setInfoWindowAnchor(calloutAnchorX, calloutAnchorY);
     }
-    update();
+    update(false);
+  }
+
+  public void setTracksViewChanges(boolean tracksViewChanges) {
+    this.tracksViewChanges = tracksViewChanges;
+    updateTracksViewChanges();
+  }
+
+  private void updateTracksViewChanges() {
+    boolean shouldTrack = tracksViewChanges && hasCustomMarkerView && marker != null;
+    if (shouldTrack == tracksViewChangesActive)
+      return;
+    tracksViewChangesActive = shouldTrack;
+
+    if (shouldTrack) {
+      ViewChangesTracker.getInstance().addMarker(this);
+    } else {
+      ViewChangesTracker.getInstance().removeMarker(this);
+
+      // Let it render one more time to avoid race conditions.
+      // i.e. Image onLoad ->
+      // ViewChangesTracker may not get a chance to render ->
+      // setState({ tracksViewChanges: false }) ->
+      // image loaded but not rendered.
+      updateMarkerIcon();
+    }
+  }
+
+  public boolean updateCustomForTracking() {
+    if (!tracksViewChangesActive)
+      return false;
+
+    updateMarkerIcon();
+
+    return true;
+  }
+
+  public void updateMarkerIcon() {
+    if (!hasViewChanges)
+      return;
+
+    if (!hasCustomMarkerView) {
+      // No more updates for this, as it's a simple icon
+      hasViewChanges = false;
+    }
+    if (marker != null) {
+      marker.setIcon(getIcon());
+    }
   }
 
   public LatLng interpolate(float fraction, LatLng a, LatLng b) {
@@ -221,11 +272,7 @@ public class AirMapMarker extends AirMapFeature {
       }
     };
     Property<Marker, LatLng> property = Property.of(Marker.class, LatLng.class, "position");
-    ObjectAnimator animator = ObjectAnimator.ofObject(
-      marker,
-      property,
-      typeEvaluator,
-      finalPosition);
+    ObjectAnimator animator = ObjectAnimator.ofObject(marker, property, typeEvaluator, finalPosition);
     animator.setDuration(duration);
     animator.start();
   }
@@ -235,7 +282,7 @@ public class AirMapMarker extends AirMapFeature {
     if (uri == null) {
       iconBitmapDescriptor = null;
       iconBitmap = null;
-      update();
+      update(true);
       return;
     }
 
@@ -251,19 +298,18 @@ public class AirMapMarker extends AirMapFeature {
     if (container != null) {
       iconBitmapDescriptor = container.getBitmapDescriptor();
       iconBitmap = container.getBitmap();
-      update();
+      update(true);
       return;
     }
 
-    if (uri.startsWith("http://") || uri.startsWith("https://") ||
-        uri.startsWith("file://") || uri.startsWith("asset://")) {
+    if (uri.startsWith("http://") || uri.startsWith("https://") || uri.startsWith("file://")
+        || uri.startsWith("asset://")) {
 
-      ImageRequest imageRequest = ImageRequestBuilder
-          .newBuilderWithSource(Uri.parse(uri))
-          .build();
+      ImageRequest imageRequest = ImageRequestBuilder.newBuilderWithSource(Uri.parse(uri)).build();
 
       ImagePipeline imagePipeline = Fresco.getImagePipeline();
-      final DataSource<CloseableReference<CloseableImage>> dataSource = imagePipeline.fetchDecodedImage(imageRequest, null);
+      final DataSource<CloseableReference<CloseableImage>> dataSource = imagePipeline.fetchDecodedImage(imageRequest,
+          null);
       IMG_LOADING_IN_PROGRESS.add(uri);
 
       dataSource.subscribe(new BaseBitmapDataSubscriber() {
@@ -273,7 +319,7 @@ public class AirMapMarker extends AirMapFeature {
             iconBitmapDescriptor = LruCacheManager.getInstance().addBitmapToMemoryCache(uri, bitmap);
             iconBitmap = bitmap;
             dataSource.close();
-            update();
+            update(true);
             IMG_LOADING_IN_PROGRESS.remove(uri);
           }
         }
@@ -291,14 +337,15 @@ public class AirMapMarker extends AirMapFeature {
       int drawableId = getDrawableResourceByName(uri);
       iconBitmap = BitmapFactory.decodeResource(getResources(), drawableId);
       if (iconBitmap == null) { // VectorDrawable or similar
-          Drawable drawable = getResources().getDrawable(drawableId);
-          iconBitmap = Bitmap.createBitmap(drawable.getIntrinsicWidth(), drawable.getIntrinsicHeight(), Bitmap.Config.ARGB_8888);
-          drawable.setBounds(0, 0, drawable.getIntrinsicWidth(), drawable.getIntrinsicHeight());
-          Canvas canvas = new Canvas(iconBitmap);
-          drawable.draw(canvas);
+        Drawable drawable = getResources().getDrawable(drawableId);
+        iconBitmap = Bitmap.createBitmap(drawable.getIntrinsicWidth(), drawable.getIntrinsicHeight(),
+            Bitmap.Config.ARGB_8888);
+        drawable.setBounds(0, 0, drawable.getIntrinsicWidth(), drawable.getIntrinsicHeight());
+        Canvas canvas = new Canvas(iconBitmap);
+        drawable.draw(canvas);
       }
       iconBitmapDescriptor = LruCacheManager.getInstance().addBitmapToMemoryCache(uri, iconBitmap);
-      update();
+      update(true);
     }
   }
 
@@ -317,8 +364,23 @@ public class AirMapMarker extends AirMapFeature {
     // if children are added, it means we are rendering a custom marker
     if (!(child instanceof AirMapCallout)) {
       hasCustomMarkerView = true;
+      updateTracksViewChanges();
     }
-    update();
+    update(true);
+  }
+
+  @Override
+  public void requestLayout() {
+    super.requestLayout();
+
+    if (getChildCount() == 0) {
+      if (hasCustomMarkerView) {
+        hasCustomMarkerView = false;
+        clearDrawableCache();
+        updateTracksViewChanges();
+        update(true);
+      }
+    }
   }
 
   @Override
@@ -329,12 +391,14 @@ public class AirMapMarker extends AirMapFeature {
   @Override
   public void addToMap(GoogleMap map) {
     marker = map.addMarker(getMarkerOptions());
+    updateTracksViewChanges();
   }
 
   @Override
   public void removeFromMap(GoogleMap map) {
     marker.remove();
     marker = null;
+    updateTracksViewChanges();
   }
 
   private BitmapDescriptor getIcon() {
@@ -363,8 +427,10 @@ public class AirMapMarker extends AirMapFeature {
 
   private MarkerOptions fillMarkerOptions(MarkerOptions options) {
     options.position(position);
-    if (anchorIsSet) options.anchor(anchorX, anchorY);
-    if (calloutAnchorIsSet) options.infoWindowAnchor(calloutAnchorX, calloutAnchorY);
+    if (anchorIsSet)
+      options.anchor(anchorX, anchorY);
+    if (calloutAnchorIsSet)
+      options.infoWindowAnchor(calloutAnchorX, calloutAnchorY);
     options.title(title);
     options.snippet(snippet);
     options.rotation(rotation);
@@ -376,12 +442,13 @@ public class AirMapMarker extends AirMapFeature {
     return options;
   }
 
-  public void update() {
+  public void update(boolean updateIcon) {
     if (marker == null) {
       return;
     }
 
-    marker.setIcon(getIcon());
+    if (updateIcon)
+      updateMarkerIcon();
 
     if (anchorIsSet) {
       marker.setAnchor(anchorX, anchorY);
@@ -399,14 +466,30 @@ public class AirMapMarker extends AirMapFeature {
   public void update(int width, int height) {
     this.width = width;
     this.height = height;
-    update();
+
+    update(true);
+  }
+
+  private Bitmap mLastBitmapCreated = null;
+
+  private void clearDrawableCache() {
+    mLastBitmapCreated = null;
   }
 
   private Bitmap createDrawable() {
     int width = this.width <= 0 ? 100 : this.width;
     int height = this.height <= 0 ? 100 : this.height;
     this.buildDrawingCache();
-    Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+
+    // Do not create the doublebuffer-bitmap each time. reuse it to save memory.
+    Bitmap bitmap = mLastBitmapCreated;
+
+    if (bitmap == null || bitmap.isRecycled() || bitmap.getWidth() != width || bitmap.getHeight() != height) {
+      bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+      mLastBitmapCreated = bitmap;
+    } else {
+      bitmap.eraseColor(Color.TRANSPARENT);
+    }
 
     Canvas canvas = new Canvas(bitmap);
     this.draw(canvas);
@@ -423,7 +506,8 @@ public class AirMapMarker extends AirMapFeature {
   }
 
   public View getCallout() {
-    if (this.calloutView == null) return null;
+    if (this.calloutView == null)
+      return null;
 
     if (this.wrappedCalloutView == null) {
       this.wrapCalloutView();
@@ -437,7 +521,8 @@ public class AirMapMarker extends AirMapFeature {
   }
 
   public View getInfoContents() {
-    if (this.calloutView == null) return null;
+    if (this.calloutView == null)
+      return null;
 
     if (this.wrappedCalloutView == null) {
       this.wrapCalloutView();
@@ -451,7 +536,8 @@ public class AirMapMarker extends AirMapFeature {
   }
 
   private void wrapCalloutView() {
-    // some hackery is needed to get the arbitrary infowindow view to render centered, and
+    // some hackery is needed to get the arbitrary infowindow view to render
+    // centered, and
     // with only the width/height that it needs.
     if (this.calloutView == null || this.calloutView.getChildCount() == 0) {
       return;
@@ -459,20 +545,11 @@ public class AirMapMarker extends AirMapFeature {
 
     LinearLayout LL = new LinearLayout(context);
     LL.setOrientation(LinearLayout.VERTICAL);
-    LL.setLayoutParams(new LinearLayout.LayoutParams(
-        this.calloutView.width,
-        this.calloutView.height,
-        0f
-    ));
-
+    LL.setLayoutParams(new LinearLayout.LayoutParams(this.calloutView.width, this.calloutView.height, 0f));
 
     LinearLayout LL2 = new LinearLayout(context);
     LL2.setOrientation(LinearLayout.HORIZONTAL);
-    LL2.setLayoutParams(new LinearLayout.LayoutParams(
-        this.calloutView.width,
-        this.calloutView.height,
-        0f
-    ));
+    LL2.setLayoutParams(new LinearLayout.LayoutParams(this.calloutView.width, this.calloutView.height, 0f));
 
     LL.addView(LL2);
     LL2.addView(this.calloutView);
@@ -481,10 +558,7 @@ public class AirMapMarker extends AirMapFeature {
   }
 
   private int getDrawableResourceByName(String name) {
-    return getResources().getIdentifier(
-        name,
-        "drawable",
-        getContext().getPackageName());
+    return getResources().getIdentifier(name, "drawable", getContext().getPackageName());
   }
 
   private BitmapDescriptor getBitmapDescriptorByName(String name) {
